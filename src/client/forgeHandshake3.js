@@ -44,6 +44,13 @@ proto.addTypes({
 
 proto.addProtocol(require('./data/fml3.json'), ['fml3'])
 
+// answer a login plugin request with an fml:handshake Acknowledgement
+function acknowledgeLoginPluginRequest (client, messageId) {
+  const acknowledgementPacket = proto.createPacketBuffer(PROTODEF_TYPES.HANDSHAKE, { discriminator: 'Acknowledgement' })
+  const loginWrapperPacket = proto.createPacketBuffer(PROTODEF_TYPES.LOGINWRAPPER, { channel: FML_CHANNELS.HANDSHAKE, data: acknowledgementPacket })
+  client.write('login_plugin_response', { messageId, data: loginWrapperPacket })
+}
+
 /**
  * FML3 handshake to the server.
  * ! There is no wiki for it.
@@ -103,10 +110,19 @@ module.exports = function (client, options) {
 
       switch (loginwrapper.channel) {
         case 'fml:handshake': {
-          const { data: handshake } = proto.parsePacketBuffer(
-            PROTODEF_TYPES.HANDSHAKE,
-            loginwrapper.data
-          )
+          let handshake
+          try {
+            handshake = proto.parsePacketBuffer(
+              PROTODEF_TYPES.HANDSHAKE,
+              loginwrapper.data
+            ).data
+          } catch (error) {
+            // unknown or malformed handshake payload: acknowledge so the login
+            // handshake keeps going instead of stalling forever
+            debug('failed to parse fml:handshake payload, acknowledging:', error)
+            acknowledgeLoginPluginRequest(client, data.messageId)
+            return
+          }
 
           let loginwrapperpacket = Buffer.alloc(0)
           switch (handshake.discriminator) {
@@ -176,6 +192,10 @@ module.exports = function (client, options) {
 
             // respond with Ack
             case 'ServerRegistry': {
+              // keep the received registry data around for consumers,
+              // e.g. mapping runtime ids to entry names
+              client.fmlRegistries = client.fmlRegistries || {}
+              client.fmlRegistries[handshake.data.name] = handshake.data.snapshot
               loginwrapperpacket = proto.createPacketBuffer(
                 PROTODEF_TYPES.LOGINWRAPPER,
                 {
@@ -234,9 +254,22 @@ module.exports = function (client, options) {
               break
             }
 
-            // this shouldn't happen
-            case 'Acknowledgement':
-              throw Error('received clientbound-only Acknowledgement from server')
+            // the server concludes the login handshake with an Acknowledgement
+            // delivered as a login plugin request; acknowledge back to
+            // complete the login
+            case 'Acknowledgement': {
+              loginwrapperpacket = proto.createPacketBuffer(
+                PROTODEF_TYPES.LOGINWRAPPER,
+                {
+                  channel: FML_CHANNELS.HANDSHAKE,
+                  data: proto.createPacketBuffer(PROTODEF_TYPES.HANDSHAKE, {
+                    discriminator: 'Acknowledgement',
+                    data: {}
+                  })
+                }
+              )
+              break
+            }
           }
 
           client.write('login_plugin_response', {
