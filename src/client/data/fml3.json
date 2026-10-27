@@ -86,16 +86,6 @@
               "type": "varint"
             }
           ]
-        },
-        {
-          "name": "dummied",
-          "type": [
-            "array",
-            {
-              "countType": "varint",
-              "type": "string"
-            }
-          ]
         }
       ]
     ],
